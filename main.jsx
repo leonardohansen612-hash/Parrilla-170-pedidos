@@ -86,7 +86,7 @@ function Header({mode,onHome}){
   return <header className="topbar">
     <button className="brand" onClick={onHome}>
       <img src="/logo-parrilla170.jpeg" alt="Parrilla 170"/>
-      <div><strong>Parrilla 170</strong><span>Pedidos • V1</span></div>
+      <div><strong>Parrilla 170</strong><span>Pedidos • V1.3 IMPRESSÃO</span></div>
     </button>
     {mode && <div className="mode-pill">{labels[mode]}</div>}
   </header>
@@ -298,7 +298,7 @@ function Admin({orders,changeStatus,createOrder,setMode}){
   },[orders])
 
   return <div className="admin-wrap">
-    <div className="admin-actions"><div className="search"><Search/><input placeholder="Buscar pedido, mesa ou cliente" value={search} onChange={e=>setSearch(e.target.value)}/></div><div className="admin-buttons"><button className="secondary" onClick={()=>setShowPrint(true)}><Settings/>Impressoras</button><button className="secondary" onClick={()=>setShowClosing(true)}><ReceiptText/>Fechamento</button><button className="primary" onClick={()=>setQuick(true)}><Plus/>Novo pedido</button></div></div>
+    <div className="version-banner">V1.3 • IMPRESSÃO ATIVA</div><div className="admin-actions"><div className="search"><Search/><input placeholder="Buscar pedido, mesa ou cliente" value={search} onChange={e=>setSearch(e.target.value)}/></div><div className="admin-buttons"><button className="secondary" onClick={()=>setShowPrint(true)}><Settings/>Impressoras</button><button className="secondary" onClick={()=>setShowClosing(true)}><ReceiptText/>Fechamento</button><button className="primary" onClick={()=>setQuick(true)}><Plus/>Novo pedido</button></div></div>
     {!firebaseEnabled && <div className="demo-strip"><RefreshCcw/> Demonstração local • configure o Firebase para sincronizar notebook, garçom e cliente.</div>}
     <div className="kanban">{Object.entries(STATUS).map(([key,meta])=>{const Icon=meta.icon;const list=filtered.filter(o=>o.status===key);return <section className="column" key={key}><div className="column-head"><div><Icon/><strong>{meta.label}</strong></div><span>{list.length}</span></div><div className="cards">{list.map(o=><article className="order-card" key={o.id}><div className="order-top"><div><b>#{o.number||'—'}</b><span>Mesa {o.table}</span></div><time>{stamp(o.createdAt)}</time></div><div className="source">{o.source==='cliente'?'Pedido do cliente':'Lançado pela equipe'}</div><div className="order-items">{o.items?.map((i,idx)=><div key={idx}><span>{i.qty}× {i.name}</span><b>{money(i.qty*i.price)}</b></div>)}</div>{o.notes&&<div className="order-notes">“{o.notes}”</div>}<div className="order-total"><span>Total</span><strong>{money(Number(o.total)||0)}</strong></div><div className="order-actions"><button className="print-order" title="Imprimir pedido" onClick={()=>printOrder(o,true)}><Printer/></button>{key!=='entregue'&&<button className="advance" onClick={()=>changeStatus(o.id,next[key])}>{key==='novo'?'Iniciar preparo':key==='preparo'?'Marcar como pronto':'Entregar pedido'} →</button>}</div></article>)}{!list.length&&<div className="empty-column">Nenhum pedido</div>}</div></section>})}</div>
     {quick&&<div className="modal"><div className="modal-box"><button className="close" onClick={()=>setQuick(false)}><X/></button><Ordering mode="garcom" createOrder={async p=>{await createOrder(p);setQuick(false)}}/></div></div>}
