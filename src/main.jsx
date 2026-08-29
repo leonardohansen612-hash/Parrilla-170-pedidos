@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { initializeApp } from 'firebase/app'
 import { addDoc, collection, doc, getFirestore, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from 'firebase/firestore'
-import { ClipboardList, Flame, Smartphone, UserRound, ShoppingCart, Plus, Minus, Send, CheckCircle2, ChefHat, Clock3, UtensilsCrossed, X, Search, RefreshCcw, Printer, Settings, ReceiptText, PlugZap } from 'lucide-react'
+import { ClipboardList, Flame, Smartphone, UserRound, ShoppingCart, Plus, Minus, Send, CheckCircle2, ChefHat, Clock3, UtensilsCrossed, X, Search, RefreshCcw, Printer, Settings, ReceiptText, PlugZap, History, CalendarDays, Beer } from 'lucide-react'
 import './styles.css'
 
 const PRODUCTS = [
@@ -28,6 +28,37 @@ const PRODUCTS = [
   { id:'maionese', name:'Maionese Artesanal', price:3, category:'Adicionais', sector:'cozinha' },
   { id:'bacon', name:'Bacon', price:5, category:'Adicionais', sector:'cozinha' },
   { id:'extra', name:'Hambúrguer Extra', price:14, category:'Adicionais', sector:'cozinha' },
+
+]
+
+const BEVERAGES = [
+  { id:'bitterzinha', name:'Bitterzinha', category:'Cervejas', sector:'bar', sizes:{P:15, G:24} },
+  { id:'pilsen', name:'Pilsen', category:'Cervejas', sector:'bar', sizes:{P:12, G:20} },
+  { id:'hoplager', name:'Hoplager', category:'Cervejas', sector:'bar', sizes:{P:14, G:22} },
+  { id:'witbier', name:'Witbier', category:'Cervejas', sector:'bar', sizes:{P:13, G:21} },
+  { id:'yba', name:'Ybá', category:'Cervejas', sector:'bar', sizes:{P:16, G:24} },
+  { id:'ipazero', name:'IPA Zero', category:'Cervejas', sector:'bar', sizes:{P:18, G:28} },
+  { id:'americanipa', name:'American IPA', category:'Cervejas', sector:'bar', sizes:{P:17, G:26} },
+  { id:'textreme', name:'Textreme', category:'Cervejas', sector:'bar', sizes:{P:18, G:28} },
+  { id:'englishporter', name:'English Porter', category:'Cervejas', sector:'bar', sizes:{P:14, G:22} },
+  { id:'mariamanuela', name:'Maria Manuela', category:'Cervejas', sector:'bar', sizes:{P:30, G:45} },
+  { id:'mariamanuela-longway', name:'Maria Manuela Long Way', category:'Cervejas', sector:'bar', sizes:{P:44, G:66} },
+
+  { id:'coca', name:'Coca', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'cocazero', name:'Coca Zero', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'sprite', name:'Sprite', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'spritezero', name:'Sprite Zero', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'guarana', name:'Guaraná', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'guaranazero', name:'Guaraná Zero', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'h2o', name:'H2O', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'delvalle-pessego', name:'Del Valle Pêssego', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'pratz-laranja', name:'Pratz Laranja', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'suco-limao', name:'Suco de limão Natural', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'agua', name:'Água', category:'Não Alcoólicas', sector:'bar', price:8 },
+  { id:'agua-gas', name:'Água com gás', category:'Não Alcoólicas', sector:'bar', price:8 },
+  { id:'tonica', name:'Tônica', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'tonicazero', name:'Tônica Zero', category:'Não Alcoólicas', sector:'bar', price:10 },
+  { id:'suco-uva', name:'Suco de uva', category:'Não Alcoólicas', sector:'bar', price:19 },
 ]
 
 const money = v => v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})
@@ -86,7 +117,7 @@ function Header({mode,onHome}){
   return <header className="topbar">
     <button className="brand" onClick={onHome}>
       <img src="/logo-parrilla170.jpeg" alt="Parrilla 170"/>
-      <div><strong>Parrilla 170</strong><span>Pedidos • V1.6 DIAGNÓSTICO QZ</span></div>
+      <div><strong>Parrilla 170</strong><span>Pedidos • V1.7 HISTÓRICO + BEBIDAS</span></div>
     </button>
     {mode && <div className="mode-pill">{labels[mode]}</div>}
   </header>
@@ -136,22 +167,52 @@ function Ordering({mode,createOrder}){
   const [customer,setCustomer]=useState('')
   const [notes,setNotes]=useState('')
   const [sent,setSent]=useState(false)
-  const cats=['Pratos','Lanches','Adicionais']
+  const cats=['Pratos','Lanches','Adicionais','Bebidas']
+
   const add=p=>setCart(cur=>{
     const found=cur.find(i=>i.id===p.id)
     return found?cur.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i):[...cur,{...p,qty:1}]
   })
+
+  const addBeer=(p,size)=>{
+    const id=`${p.id}-${size.toLowerCase()}`
+    add({id,name:`${p.name} ${size}`,price:p.sizes[size],category:'Bebidas',sector:'bar'})
+  }
+
   const submit=async()=>{
     const total=cart.reduce((s,i)=>s+i.price*i.qty,0)
     await createOrder({table,customer:customer||`Mesa ${table}`,source:mode,status:'novo',total,items:cart.map(({id,name,price,qty,sector})=>({id,name,price,qty,sector:sector||'cozinha'})),notes})
     setSent(true); setCart([]); setNotes(''); if(mode!=='cliente') setTable('')
   }
+
   if(sent) return <div className="success-screen"><CheckCircle2/><h2>Pedido enviado!</h2><p>{mode==='cliente'?'Seu pedido já foi enviado para a Parrilla 170.':'Pedido registrado com sucesso.'}</p><button onClick={()=>setSent(false)}>Novo pedido</button></div>
+
+  const normalProducts=PRODUCTS.filter(p=>p.category===cat)
+  const beers=BEVERAGES.filter(p=>p.category==='Cervejas')
+  const softs=BEVERAGES.filter(p=>p.category==='Não Alcoólicas')
+
   return <div className="ordering-layout">
     <main className="menu-area">
       <div className="menu-head"><div><h2>{mode==='cliente'?'Faça seu pedido':'Novo pedido'}</h2><p>Toque nos produtos para adicionar.</p></div></div>
       <div className="categories">{cats.map(c=><button className={cat===c?'active':''} onClick={()=>setCat(c)} key={c}>{c}</button>)}</div>
-      <div className="product-grid">{PRODUCTS.filter(p=>p.category===cat).map(p=><button className="product-card" key={p.id} onClick={()=>add(p)}><div className="product-icon">{p.category==='Adicionais'?<Plus/>:<Flame/>}</div><strong>{p.name}</strong><span>{money(p.price)}</span><small>Adicionar +</small></button>)}</div>
+
+      {cat!=='Bebidas' ? (
+        <div className="product-grid">{normalProducts.map(p=><button className="product-card" key={p.id} onClick={()=>add(p)}><div className="product-icon">{p.category==='Adicionais'?<Plus/>:<Flame/>}</div><strong>{p.name}</strong><span>{money(p.price)}</span><small>Adicionar +</small></button>)}</div>
+      ) : (
+        <div className="beverage-menu">
+          <div className="beverage-section-title"><Beer/><div><strong>Cervejas</strong><span>Escolha o tamanho P ou G</span></div></div>
+          <div className="product-grid beverage-grid">{beers.map(p=><div className="product-card beverage-card" key={p.id}>
+            <div className="product-icon"><Beer/></div><strong>{p.name}</strong>
+            <div className="size-actions">
+              <button onClick={()=>addBeer(p,'P')}><b>P</b><span>{money(p.sizes.P)}</span></button>
+              <button onClick={()=>addBeer(p,'G')}><b>G</b><span>{money(p.sizes.G)}</span></button>
+            </div>
+          </div>)}</div>
+
+          <div className="beverage-section-title soft-title"><ShoppingCart/><div><strong>Bebidas não alcoólicas</strong><span>Todos os itens abaixo são enviados ao BAR</span></div></div>
+          <div className="product-grid">{softs.map(p=><button className="product-card" key={p.id} onClick={()=>add(p)}><div className="product-icon"><ShoppingCart/></div><strong>{p.name}</strong><span>{money(p.price)}</span><small>Adicionar +</small></button>)}</div>
+        </div>
+      )}
     </main>
     <Cart {...{cart,setCart,notes,setNotes,table,setTable,customer,setCustomer,onSend:submit,mode}} />
   </div>
@@ -168,6 +229,21 @@ function stamp(v){
   const d=v?.toDate?v.toDate():new Date(v)
   return d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})
 }
+
+function asDate(v){
+  if(!v) return null
+  const d=v?.toDate?v.toDate():new Date(v)
+  return isNaN(d)?null:d
+}
+function localDateKey(v){
+  const d=asDate(v)
+  if(!d) return ''
+  const y=d.getFullYear()
+  const m=String(d.getMonth()+1).padStart(2,'0')
+  const day=String(d.getDate()).padStart(2,'0')
+  return `${y}-${m}-${day}`
+}
+function todayKey(){ return localDateKey(new Date()) }
 
 const DEFAULT_PRINT_SETTINGS = {
   cozinha:'', bar:'', caixa:'',
@@ -416,13 +492,49 @@ function ClosingModal({orders,onClose}){
   </div></div>
 }
 
+
+function HistoryModal({orders,onClose}){
+  const [date,setDate]=useState(todayKey())
+  const list=useMemo(()=>orders.filter(o=>localDateKey(o.createdAt)===date).sort((a,b)=>orderCreatedMs(b)-orderCreatedMs(a)),[orders,date])
+  const total=list.reduce((s,o)=>s+(Number(o.total)||0),0)
+  const delivered=list.filter(o=>o.status==='entregue').length
+  return <div className="modal settings-modal"><div className="settings-box history-box">
+    <div className="settings-head"><div><h2><History/> Histórico de pedidos</h2><p>Os pedidos antigos continuam salvos no Firebase.</p></div><button className="close-inline" onClick={onClose}><X/></button></div>
+    <div className="history-toolbar">
+      <label><CalendarDays/> Data <input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
+      <div><span>Pedidos</span><b>{list.length}</b></div>
+      <div><span>Entregues</span><b>{delivered}</b></div>
+      <div><span>Total</span><b>{money(total)}</b></div>
+    </div>
+    <div className="history-list">
+      {list.map(o=><article className="history-order" key={o.id}>
+        <div className="history-order-head"><div><b>#{o.number||'—'}</b><span>Mesa {o.table||'-'} • {o.customer||'-'}</span></div><div><time>{stamp(o.createdAt)}</time><small>{STATUS[o.status]?.label||o.status}</small></div></div>
+        <div className="history-items">{(o.items||[]).map((i,idx)=><div key={idx}><span>{i.qty}× {i.name}</span><b>{money((Number(i.qty)||0)*(Number(i.price)||0))}</b></div>)}</div>
+        {o.notes&&<div className="order-notes">“{o.notes}”</div>}
+        <div className="order-total"><span>Total</span><strong>{money(Number(o.total)||0)}</strong></div>
+      </article>)}
+      {!list.length&&<div className="history-empty">Nenhum pedido encontrado nesta data.</div>}
+    </div>
+    <div className="settings-footer"><button className="primary" onClick={onClose}>Fechar</button></div>
+  </div></div>
+}
+
 function Admin({orders,changeStatus,createOrder,setMode}){
   const [search,setSearch]=useState('')
   const [quick,setQuick]=useState(false)
   const [showPrint,setShowPrint]=useState(false)
   const [showClosing,setShowClosing]=useState(false)
+  const [showHistory,setShowHistory]=useState(false)
   const [printSettings,setPrintSettings]=useState(getPrintSettings())
-  const filtered=useMemo(()=>orders.filter(o=>`${o.number} ${o.table} ${o.customer}`.toLowerCase().includes(search.toLowerCase())),[orders,search])
+  const filtered=useMemo(()=>{
+    const q=search.toLowerCase()
+    return orders.filter(o=>{
+      const matches=`${o.number} ${o.table} ${o.customer}`.toLowerCase().includes(q)
+      if(!matches) return false
+      if(o.status==='entregue') return localDateKey(o.createdAt)===todayKey()
+      return true
+    })
+  },[orders,search])
   const next={novo:'preparo',preparo:'pronto',pronto:'entregue'}
 
   const printOrder=async(order, manual=false)=>{
@@ -432,12 +544,13 @@ function Admin({orders,changeStatus,createOrder,setMode}){
 
 
   return <div className="admin-wrap">
-    <div className="version-banner">V1.6 • DIAGNÓSTICO QZ + AUTO PRINT</div><div className="admin-actions"><div className="search"><Search/><input placeholder="Buscar pedido, mesa ou cliente" value={search} onChange={e=>setSearch(e.target.value)}/></div><div className="admin-buttons"><button className="secondary" onClick={()=>setShowPrint(true)}><Settings/>Impressoras</button><button className="secondary" onClick={()=>setShowClosing(true)}><ReceiptText/>Fechamento</button><button className="primary" onClick={()=>setQuick(true)}><Plus/>Novo pedido</button></div></div>
+    <div className="version-banner">V1.7 • HISTÓRICO + BEBIDAS NO BAR</div><div className="admin-actions"><div className="search"><Search/><input placeholder="Buscar pedido, mesa ou cliente" value={search} onChange={e=>setSearch(e.target.value)}/></div><div className="admin-buttons"><button className="secondary" onClick={()=>setShowPrint(true)}><Settings/>Impressoras</button><button className="secondary" onClick={()=>setShowHistory(true)}><History/>Histórico</button><button className="secondary" onClick={()=>setShowClosing(true)}><ReceiptText/>Fechamento</button><button className="primary" onClick={()=>setQuick(true)}><Plus/>Novo pedido</button></div></div>
     {!firebaseEnabled && <div className="demo-strip"><RefreshCcw/> Demonstração local • configure o Firebase para sincronizar notebook, garçom e cliente.</div>}
     <div className="kanban">{Object.entries(STATUS).map(([key,meta])=>{const Icon=meta.icon;const list=filtered.filter(o=>o.status===key);return <section className="column" key={key}><div className="column-head"><div><Icon/><strong>{meta.label}</strong></div><span>{list.length}</span></div><div className="cards">{list.map(o=><article className="order-card" key={o.id}><div className="order-top"><div><b>#{o.number||'—'}</b><span>Mesa {o.table}</span></div><time>{stamp(o.createdAt)}</time></div><div className="source">{o.source==='cliente'?'Pedido do cliente':'Lançado pela equipe'}</div><div className="order-items">{o.items?.map((i,idx)=><div key={idx}><span>{i.qty}× {i.name}</span><b>{money(i.qty*i.price)}</b></div>)}</div>{o.notes&&<div className="order-notes">“{o.notes}”</div>}<div className="order-total"><span>Total</span><strong>{money(Number(o.total)||0)}</strong></div><div className="order-actions"><button className="print-order" title="Imprimir pedido" onClick={()=>printOrder(o,true)}><Printer/></button>{key!=='entregue'&&<button className="advance" onClick={()=>changeStatus(o.id,next[key])}>{key==='novo'?'Iniciar preparo':key==='preparo'?'Marcar como pronto':'Entregar pedido'} →</button>}</div></article>)}{!list.length&&<div className="empty-column">Nenhum pedido</div>}</div></section>})}</div>
     {quick&&<div className="modal"><div className="modal-box"><button className="close" onClick={()=>setQuick(false)}><X/></button><Ordering mode="garcom" createOrder={async p=>{await createOrder(p);setQuick(false)}}/></div></div>}
     {showPrint&&<PrintSettingsModal onClose={()=>setShowPrint(false)} onSaved={setPrintSettings}/>} 
     {showClosing&&<ClosingModal orders={orders} onClose={()=>setShowClosing(false)}/>} 
+    {showHistory&&<HistoryModal orders={orders} onClose={()=>setShowHistory(false)}/>} 
   </div>
 }
 
