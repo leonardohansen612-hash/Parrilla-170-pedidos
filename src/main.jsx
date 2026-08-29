@@ -86,7 +86,7 @@ function Header({mode,onHome}){
   return <header className="topbar">
     <button className="brand" onClick={onHome}>
       <img src="/logo-parrilla170.jpeg" alt="Parrilla 170"/>
-      <div><strong>Parrilla 170</strong><span>Pedidos • V1.3 IMPRESSÃO</span></div>
+      <div><strong>Parrilla 170</strong><span>Pedidos • V1.6 DIAGNÓSTICO QZ</span></div>
     </button>
     {mode && <div className="mode-pill">{labels[mode]}</div>}
   </header>
@@ -180,9 +180,61 @@ function getPrintSettings(){
 }
 function savePrintSettings(v){ localStorage.setItem('p170_print_settings', JSON.stringify(v)) }
 
+let qzSecurityState={configured:false,signed:false,error:'',certificate:false,backend:false,keyMatch:false,detail:''}
+let qzSecurityPromise=null
+
+async function getQzDiagnostic(){
+  const r=await fetch('/api/qz-diagnostic',{cache:'no-store'})
+  const data=await r.json().catch(()=>({ok:false,error:`HTTP ${r.status}`}))
+  if(!r.ok || !data.ok) throw new Error(data.error||`Diagnóstico QZ falhou (HTTP ${r.status})`)
+  return data
+}
+
+async function setupQzSecurity(force=false){
+  if(force){ qzSecurityPromise=null; qzSecurityState={configured:false,signed:false,error:'',certificate:false,backend:false,keyMatch:false,detail:''} }
+  if(qzSecurityPromise) return qzSecurityPromise
+  qzSecurityPromise=(async()=>{
+    const qz=window.qz
+    if(!qz) throw new Error('Biblioteca do QZ Tray não carregou.')
+    try{
+      const diag=await getQzDiagnostic()
+      qzSecurityState.backend=true
+      qzSecurityState.certificate=!!diag.certificate
+      qzSecurityState.keyMatch=!!diag.keyMatch
+      qzSecurityState.detail=diag.keyType||''
+      if(!diag.keyMatch) throw new Error('O certificado e a chave privada não correspondem.')
+
+      const certRes=await fetch('/api/qz-certificate',{cache:'no-store'})
+      if(!certRes.ok) throw new Error(`Certificado QZ indisponível (HTTP ${certRes.status})`)
+      const certificate=await certRes.text()
+      if(!certificate.includes('BEGIN CERTIFICATE')) throw new Error('Certificado QZ inválido')
+
+      qz.security.setCertificatePromise((resolve)=>resolve(certificate))
+      qz.security.setSignatureAlgorithm('SHA512')
+      qz.security.setSignaturePromise(toSign=>function(resolve,reject){
+        fetch('/api/qz-sign',{
+          method:'POST', cache:'no-store', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({request:toSign})
+        }).then(async r=>{
+          const txt=await r.text()
+          if(r.ok) resolve(txt)
+          else reject(new Error(txt||`Falha ao assinar (HTTP ${r.status})`))
+        }).catch(reject)
+      })
+      qzSecurityState={...qzSecurityState,configured:true,signed:true,error:''}
+    }catch(e){
+      qzSecurityState={...qzSecurityState,configured:true,signed:false,error:e.message||String(e)}
+      throw e
+    }
+    return qzSecurityState
+  })()
+  return qzSecurityPromise
+}
+
 async function ensureQz(){
   const qz=window.qz
   if(!qz) throw new Error('Biblioteca do QZ Tray não carregou. Verifique a internet e recarregue a página.')
+  await setupQzSecurity()
   if(qz.websocket.isActive()) return true
   await qz.websocket.connect()
   return true
@@ -218,27 +270,123 @@ function browserPrint(html){
   w.document.write(html); w.document.close(); w.focus(); setTimeout(()=>w.print(),250)
 }
 
+function orderCreatedMs(order){
+  if(order?.createdAt?.toMillis) return order.createdAt.toMillis()
+  if(order?.createdAt?.toDate) return order.createdAt.toDate().getTime()
+  const n=Number(order?.createdAt)
+  if(Number.isFinite(n)) return n
+  const d=new Date(order?.createdAt)
+  return isNaN(d)?0:d.getTime()
+}
+
+function getAutoPrintLedger(){
+  try{return JSON.parse(localStorage.getItem('p170_autoprint_ledger')||'{}')||{}}
+  catch{return {}}
+}
+function saveAutoPrintLedger(v){
+  const keys=Object.keys(v)
+  if(keys.length>500){ keys.slice(0,keys.length-500).forEach(k=>delete v[k]) }
+  localStorage.setItem('p170_autoprint_ledger',JSON.stringify(v))
+}
+
+async function printOrderBySettings(order,{manual=false}={}){
+  const st=getPrintSettings()
+  const kitchen=(order.items||[]).filter(i=>(i.sector||'cozinha')==='cozinha')
+  const bar=(order.items||[]).filter(i=>i.sector==='bar')
+  const jobs=[]
+  if(kitchen.length && (manual||st.autoCozinha) && st.cozinha) jobs.push({sector:'cozinha',run:()=>qzPrintHtml(st.cozinha,receiptHtml('COZINHA',order,kitchen))})
+  if(bar.length && (manual||st.autoBar) && st.bar) jobs.push({sector:'bar',run:()=>qzPrintHtml(st.bar,receiptHtml('BAR',order,bar))})
+  if((manual||st.autoCaixa) && st.caixa) jobs.push({sector:'caixa',run:()=>qzPrintHtml(st.caixa,receiptHtml('CAIXA',order,order.items||[],`<hr/><div style="font-size:17px"><b>TOTAL: ${money(Number(order.total)||0)}</b></div>`))})
+  if(!jobs.length && manual){ browserPrint(receiptHtml('PEDIDO',order,order.items||[],`<hr/><div style="font-size:17px"><b>TOTAL: ${money(Number(order.total)||0)}</b></div>`)); return [] }
+  const done=[]
+  for(const job of jobs){ await job.run(); done.push(job.sector) }
+  return done
+}
+
+function AutoPrintDaemon({orders}){
+  const [tick,setTick]=useState(0)
+  const running=useRef(new Set())
+  useEffect(()=>{
+    if(!localStorage.getItem('p170_autoprint_since')) localStorage.setItem('p170_autoprint_since',String(Date.now()))
+    // Pré-conecta o QZ no computador fixo; após confiar/lembrar, fica silencioso.
+    const st=getPrintSettings()
+    if((st.autoCozinha&&st.cozinha)||(st.autoBar&&st.bar)||(st.autoCaixa&&st.caixa)) ensureQz().catch(()=>{})
+    const id=setInterval(()=>setTick(x=>x+1),10000)
+    return ()=>clearInterval(id)
+  },[])
+  useEffect(()=>{
+    const since=Number(localStorage.getItem('p170_autoprint_since')||Date.now())
+    const ledger=getAutoPrintLedger()
+    const st=getPrintSettings()
+    const candidates=(orders||[]).filter(o=>o.id && orderCreatedMs(o)>=since-3000 && o.status==='novo')
+    candidates.forEach(async order=>{
+      if(running.current.has(order.id)) return
+      const kitchen=(order.items||[]).some(i=>(i.sector||'cozinha')==='cozinha')
+      const bar=(order.items||[]).some(i=>i.sector==='bar')
+      const already=ledger[order.id]||{}
+      const needKitchen=kitchen&&st.autoCozinha&&st.cozinha&&!already.cozinha
+      const needBar=bar&&st.autoBar&&st.bar&&!already.bar
+      const needCaixa=st.autoCaixa&&st.caixa&&!already.caixa
+      if(!needKitchen&&!needBar&&!needCaixa) return
+      running.current.add(order.id)
+      try{
+        await ensureQz()
+        const current=getAutoPrintLedger(); const state=current[order.id]||{}
+        if(needKitchen){ await qzPrintHtml(st.cozinha,receiptHtml('COZINHA',order,(order.items||[]).filter(i=>(i.sector||'cozinha')==='cozinha'))); state.cozinha=true; current[order.id]=state; saveAutoPrintLedger(current) }
+        if(needBar){ await qzPrintHtml(st.bar,receiptHtml('BAR',order,(order.items||[]).filter(i=>i.sector==='bar'))); state.bar=true; current[order.id]=state; saveAutoPrintLedger(current) }
+        if(needCaixa){ await qzPrintHtml(st.caixa,receiptHtml('CAIXA',order,order.items||[],`<hr/><div style="font-size:17px"><b>TOTAL: ${money(Number(order.total)||0)}</b></div>`)); state.caixa=true; current[order.id]=state; saveAutoPrintLedger(current) }
+      }catch(e){ console.warn('AutoPrint Parrilla 170:',e) }
+      finally{running.current.delete(order.id)}
+    })
+  },[orders,tick])
+  return null
+}
+
 function PrintSettingsModal({onClose,onSaved}){
   const [settings,setSettings]=useState(getPrintSettings())
   const [printers,setPrinters]=useState([])
   const [status,setStatus]=useState('Verificando QZ Tray...')
+  const [diag,setDiag]=useState({backend:null,certificate:null,keyMatch:null,socket:null,error:''})
   const load=async()=>{
+    setStatus('Executando diagnóstico...')
+    setDiag({backend:null,certificate:null,keyMatch:null,socket:null,error:''})
     try{
-      await ensureQz(); const list=await window.qz.printers.find(); setPrinters(Array.isArray(list)?list:[list].filter(Boolean)); setStatus('QZ Tray conectado')
-    }catch(e){ setStatus('QZ Tray não conectado. Abra o QZ Tray e clique em Atualizar.') }
+      const d=await getQzDiagnostic()
+      setDiag(x=>({...x,backend:true,certificate:!!d.certificate,keyMatch:!!d.keyMatch}))
+      await setupQzSecurity(true)
+      const qz=window.qz
+      if(qz.websocket.isActive()) { try{ await qz.websocket.disconnect() }catch{} }
+      await qz.websocket.connect()
+      const list=await qz.printers.find()
+      setPrinters(Array.isArray(list)?list:[list].filter(Boolean))
+      setDiag(x=>({...x,socket:true}))
+      setStatus('QZ Tray conectado com assinatura configurada')
+    }catch(e){
+      const msg=e.message||String(e)
+      setDiag(x=>({...x,socket:window.qz?.websocket?.isActive?.()||false,error:msg}))
+      setStatus(`Falha: ${msg}`)
+    }
   }
   useEffect(()=>{load()},[])
   const set=(k,v)=>setSettings(cur=>({...cur,[k]:v}))
+  const mark=v=>v===true?'✓':v===false?'✕':'…'
   const test=async sector=>{
     try{
       await qzPrintHtml(settings[sector], receiptHtml(`TESTE • ${sector.toUpperCase()}`,{number:'TESTE',table:'-',customer:'Configuração',createdAt:Date.now(),notes:''},[{qty:1,name:'Impressão de teste',price:0}]))
       alert(`Teste enviado para ${sector}.`)
     }catch(e){ alert(`Não foi possível imprimir: ${e.message||e}`) }
   }
-  const save=()=>{savePrintSettings(settings);onSaved?.(settings);onClose()}
+  const save=()=>{savePrintSettings(settings); if((settings.autoCozinha||settings.autoBar||settings.autoCaixa)&&!localStorage.getItem('p170_autoprint_since')) localStorage.setItem('p170_autoprint_since',String(Date.now())); onSaved?.(settings);onClose()}
   return <div className="modal settings-modal"><div className="settings-box">
     <div className="settings-head"><div><h2><Printer/> Impressoras</h2><p>Configure uma impressora para cada setor neste computador.</p></div><button className="close-inline" onClick={onClose}><X/></button></div>
-    <div className="qz-status"><PlugZap/><span>{status}</span><button onClick={load}>Atualizar</button></div>
+    <div className="qz-status"><PlugZap/><span>{status}</span><button onClick={load}>Diagnosticar</button></div>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,margin:'10px 0 16px'}}>
+      <div className="diag-chip"><b>{mark(diag.backend)}</b><span>Backend Vercel</span></div>
+      <div className="diag-chip"><b>{mark(diag.certificate)}</b><span>Certificado</span></div>
+      <div className="diag-chip"><b>{mark(diag.keyMatch)}</b><span>Chave confere</span></div>
+      <div className="diag-chip"><b>{mark(diag.socket)}</b><span>QZ conectado</span></div>
+    </div>
+    {diag.error&&<div style={{padding:'10px 12px',border:'1px solid #d9a6a6',borderRadius:10,marginBottom:14,fontSize:13}}><b>Erro detectado:</b> {diag.error}</div>}
     {['cozinha','bar','caixa'].map(sector=><div className="printer-row" key={sector}>
       <div><strong>{sector[0].toUpperCase()+sector.slice(1)}</strong><span>{sector==='cozinha'?'Pedidos de alimentos':sector==='bar'?'Itens cadastrados para o bar':'Via completa / fechamento'}</span></div>
       <select value={settings[sector]} onChange={e=>set(sector,e.target.value)}><option value="">Selecione...</option>{printers.map(p=><option key={p} value={p}>{p}</option>)}</select>
@@ -274,31 +422,17 @@ function Admin({orders,changeStatus,createOrder,setMode}){
   const [showPrint,setShowPrint]=useState(false)
   const [showClosing,setShowClosing]=useState(false)
   const [printSettings,setPrintSettings]=useState(getPrintSettings())
-  const initialized=useRef(false)
-  const seenIds=useRef(new Set())
   const filtered=useMemo(()=>orders.filter(o=>`${o.number} ${o.table} ${o.customer}`.toLowerCase().includes(search.toLowerCase())),[orders,search])
   const next={novo:'preparo',preparo:'pronto',pronto:'entregue'}
 
   const printOrder=async(order, manual=false)=>{
-    const st=getPrintSettings()
-    const kitchen=(order.items||[]).filter(i=>(i.sector||'cozinha')==='cozinha')
-    const bar=(order.items||[]).filter(i=>i.sector==='bar')
-    const jobs=[]
-    if(kitchen.length && (manual||st.autoCozinha) && st.cozinha) jobs.push(qzPrintHtml(st.cozinha,receiptHtml('COZINHA',order,kitchen)))
-    if(bar.length && (manual||st.autoBar) && st.bar) jobs.push(qzPrintHtml(st.bar,receiptHtml('BAR',order,bar)))
-    if((manual||st.autoCaixa) && st.caixa) jobs.push(qzPrintHtml(st.caixa,receiptHtml('CAIXA',order,order.items||[],`<hr/><div style="font-size:17px"><b>TOTAL: ${money(Number(order.total)||0)}</b></div>`)))
-    if(!jobs.length && manual){ browserPrint(receiptHtml('PEDIDO',order,order.items||[],`<hr/><div style="font-size:17px"><b>TOTAL: ${money(Number(order.total)||0)}</b></div>`)); return }
-    try{await Promise.all(jobs)}catch(e){if(manual) alert(`Falha na impressão pelo QZ Tray: ${e.message||e}`)}
+    try{await printOrderBySettings(order,{manual})}
+    catch(e){if(manual) alert(`Falha na impressão pelo QZ Tray: ${e.message||e}`)}
   }
 
-  useEffect(()=>{
-    if(!initialized.current){orders.forEach(o=>seenIds.current.add(o.id)); initialized.current=true; return}
-    const newcomers=orders.filter(o=>!seenIds.current.has(o.id))
-    newcomers.forEach(o=>{seenIds.current.add(o.id); printOrder(o,false)})
-  },[orders])
 
   return <div className="admin-wrap">
-    <div className="version-banner">V1.3 • IMPRESSÃO ATIVA</div><div className="admin-actions"><div className="search"><Search/><input placeholder="Buscar pedido, mesa ou cliente" value={search} onChange={e=>setSearch(e.target.value)}/></div><div className="admin-buttons"><button className="secondary" onClick={()=>setShowPrint(true)}><Settings/>Impressoras</button><button className="secondary" onClick={()=>setShowClosing(true)}><ReceiptText/>Fechamento</button><button className="primary" onClick={()=>setQuick(true)}><Plus/>Novo pedido</button></div></div>
+    <div className="version-banner">V1.6 • DIAGNÓSTICO QZ + AUTO PRINT</div><div className="admin-actions"><div className="search"><Search/><input placeholder="Buscar pedido, mesa ou cliente" value={search} onChange={e=>setSearch(e.target.value)}/></div><div className="admin-buttons"><button className="secondary" onClick={()=>setShowPrint(true)}><Settings/>Impressoras</button><button className="secondary" onClick={()=>setShowClosing(true)}><ReceiptText/>Fechamento</button><button className="primary" onClick={()=>setQuick(true)}><Plus/>Novo pedido</button></div></div>
     {!firebaseEnabled && <div className="demo-strip"><RefreshCcw/> Demonstração local • configure o Firebase para sincronizar notebook, garçom e cliente.</div>}
     <div className="kanban">{Object.entries(STATUS).map(([key,meta])=>{const Icon=meta.icon;const list=filtered.filter(o=>o.status===key);return <section className="column" key={key}><div className="column-head"><div><Icon/><strong>{meta.label}</strong></div><span>{list.length}</span></div><div className="cards">{list.map(o=><article className="order-card" key={o.id}><div className="order-top"><div><b>#{o.number||'—'}</b><span>Mesa {o.table}</span></div><time>{stamp(o.createdAt)}</time></div><div className="source">{o.source==='cliente'?'Pedido do cliente':'Lançado pela equipe'}</div><div className="order-items">{o.items?.map((i,idx)=><div key={idx}><span>{i.qty}× {i.name}</span><b>{money(i.qty*i.price)}</b></div>)}</div>{o.notes&&<div className="order-notes">“{o.notes}”</div>}<div className="order-total"><span>Total</span><strong>{money(Number(o.total)||0)}</strong></div><div className="order-actions"><button className="print-order" title="Imprimir pedido" onClick={()=>printOrder(o,true)}><Printer/></button>{key!=='entregue'&&<button className="advance" onClick={()=>changeStatus(o.id,next[key])}>{key==='novo'?'Iniciar preparo':key==='preparo'?'Marcar como pronto':'Entregar pedido'} →</button>}</div></article>)}{!list.length&&<div className="empty-column">Nenhum pedido</div>}</div></section>})}</div>
     {quick&&<div className="modal"><div className="modal-box"><button className="close" onClick={()=>setQuick(false)}><X/></button><Ordering mode="garcom" createOrder={async p=>{await createOrder(p);setQuick(false)}}/></div></div>}
@@ -310,7 +444,7 @@ function Admin({orders,changeStatus,createOrder,setMode}){
 function App(){
   const [mode,setMode]=useState(initialMode)
   const {orders,createOrder,changeStatus}=useOrders()
-  return <><Header mode={mode} onHome={()=>{history.pushState({},'',location.pathname);setMode(null)}}/>{!mode?<Home setMode={m=>{setMode(m);history.replaceState({},'',`?mode=${m}${m==='cliente'&&initialTable?`&mesa=${initialTable}`:''}`)}}/>:mode==='admin'?<Admin {...{orders,changeStatus,createOrder,setMode}}/>:<Ordering mode={mode} createOrder={createOrder}/>}</>
+  return <><AutoPrintDaemon orders={orders}/><Header mode={mode} onHome={()=>{history.pushState({},'',location.pathname);setMode(null)}}/>{!mode?<Home setMode={m=>{setMode(m);history.replaceState({},'',`?mode=${m}${m==='cliente'&&initialTable?`&mesa=${initialTable}`:''}`)}}/>:mode==='admin'?<Admin {...{orders,changeStatus,createOrder,setMode}}/>:<Ordering mode={mode} createOrder={createOrder}/>}</>
 }
 
 createRoot(document.getElementById('root')).render(<App/>)

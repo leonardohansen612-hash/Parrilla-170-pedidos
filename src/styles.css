@@ -6,3 +6,5 @@
 @media(max-width:760px){.admin-actions{align-items:stretch}.admin-buttons{gap:5px}.secondary{font-size:0;padding:10px}.secondary svg{margin:0}.printer-row{grid-template-columns:1fr}.closing-stats{grid-template-columns:1fr}.settings-box{padding:15px;border-radius:16px}}
 
 .version-banner{background:#fff4cf;border:1px solid #d9b650;color:#12271b;font-weight:900;border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:12px;letter-spacing:.04em}
+
+.diag-chip{display:flex;gap:6px;align-items:center;justify-content:center;padding:9px 7px;border:1px solid #ddd5c5;border-radius:10px;background:#fff;font-size:12px}.diag-chip b{font-size:17px}.diag-chip span{white-space:nowrap}
