@@ -8,7 +8,7 @@ function readKey(raw, b64) {
 export default function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).send('Method not allowed')
   const key = readKey(process.env.QZ_PRIVATE_KEY, process.env.QZ_PRIVATE_KEY_B64)
-  if (!key || !key.includes('BEGIN PRIVATE KEY')) return res.status(503).send('QZ private key not configured')
+  if (!key || !key.includes('PRIVATE KEY')) return res.status(503).send('QZ private key not configured')
   const request = req.body?.request
   if (typeof request !== 'string' || !request.length) return res.status(400).send('Missing request')
   try {
